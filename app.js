@@ -75,6 +75,7 @@ class QuizApp {
     this.streakDung = 0;
     this.streakSai = 0;
     this.theme = localStorage.getItem('urban_infra_theme') || 'light';
+    this._memeGeneration = 0; // Guards against stale image callbacks
     
     this.init();
   }
@@ -89,6 +90,23 @@ class QuizApp {
       this.bindEvents();
       this.renderDashboard();
       this.updateThemeToggleUI();
+      this.preloadAllMemeImages();
+    });
+  }
+
+  // Preload all meme images into browser cache so they display instantly
+  preloadAllMemeImages() {
+    const allLists = [
+      ...MEME_RESOURCES.file1,
+      ...MEME_RESOURCES.file2,
+      ...MEME_RESOURCES.file3,
+      ...MEME_RESOURCES.file4,
+      ...MEME_RESOURCES.file5,
+      ...MEME_RESOURCES.file6
+    ];
+    allLists.forEach(url => {
+      const img = new Image();
+      img.src = url;
     });
   }
 
@@ -573,9 +591,10 @@ class QuizApp {
   showMeme(imageUrl, isCorrect) {
     if (!imageUrl) return;
     
-    this.memeImage.src = imageUrl;
+    // Increment generation to invalidate any pending previous preload callbacks
+    const gen = ++this._memeGeneration;
     
-    // Set dynamic badge and encouraging/funny messages
+    // Prepare all text content while the card is still hidden
     if (isCorrect) {
       this.memeStreakBadge.textContent = `Streak: ${this.streakDung} 🔥`;
       this.memeStreakBadge.className = "mb-3 px-3 py-1 rounded-full text-xs font-bold uppercase tracking-wider bg-emerald-100 dark:bg-emerald-950/40 text-emerald-600 dark:text-emerald-400";
@@ -600,21 +619,52 @@ class QuizApp {
       this.memeMessage.textContent = negativeMessages[Math.min(this.streakSai - 1, negativeMessages.length - 1)];
     }
     
-    // Show meme card
-    if (this.memeCard) {
-      this.memeCard.classList.remove('hidden');
-      this.memeCard.classList.remove('animate-spring-bounce');
-      void this.memeCard.offsetWidth; // Trigger reflow
-      this.memeCard.classList.add('animate-spring-bounce');
+    // Use a detached Image to preload + decode before touching the visible <img>
+    const preloader = new Image();
+    preloader.src = imageUrl;
+    
+    // decode() returns a promise that resolves when the image is fully decoded
+    // and ready to be painted without any delay or flicker
+    const revealWhenReady = () => {
+      // Guard: if user already moved on (hideMeme incremented generation), abort
+      if (gen !== this._memeGeneration) return;
+      
+      // Set the visible image src — since preloader already decoded it,
+      // the browser serves it from cache instantly with zero flicker
+      this.memeImage.src = imageUrl;
+      this.memeImage.style.opacity = '1';
+      
+      // Reveal the card with bounce animation
+      if (this.memeCard) {
+        this.memeCard.classList.remove('hidden');
+        this.memeCard.classList.remove('animate-spring-bounce');
+        void this.memeCard.offsetWidth; // Force reflow to restart animation
+        this.memeCard.classList.add('animate-spring-bounce');
+      }
+    };
+    
+    // Try the modern decode() API first — guarantees zero-flicker rendering
+    if (typeof preloader.decode === 'function') {
+      preloader.decode()
+        .then(revealWhenReady)
+        .catch(revealWhenReady); // Show even on decode error
+    } else {
+      // Fallback for older browsers without decode()
+      preloader.onload = revealWhenReady;
+      preloader.onerror = revealWhenReady;
     }
-
-    // Don't auto-focus meme button — let the vocabNextBtn keep focus
-    // so Enter key works naturally for the 2-beat flow
   }
 
   hideMeme() {
+    // Increment generation to cancel any pending preload callbacks
+    this._memeGeneration++;
+    
     if (this.memeCard) {
       this.memeCard.classList.add('hidden');
+      this.memeCard.classList.remove('animate-spring-bounce');
+      // Immediately clear the image — no transition, no stale frame
+      this.memeImage.style.opacity = '0';
+      this.memeImage.removeAttribute('src');
     }
   }
 
